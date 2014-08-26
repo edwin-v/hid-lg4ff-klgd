@@ -31,9 +31,12 @@
 #include "usbhid/usbhid.h"
 #include "hid-lg.h"
 #include "hid-ids.h"
+#include "klgd_ff_plugin.h"
+
 
 #define to_hid_device(pdev) container_of(pdev, struct hid_device, dev)
 
+#define EFFECT_COUNT 4
 #define LG4FF_FFEX_BCDDEVICE 0x2100
 
 static void hid_lg4ff_set_range_dfp(struct hid_device *hid, u16 range);
@@ -54,10 +57,15 @@ struct lg4ff_device_entry {
 #endif
 	struct list_head list;
 	void (*set_range)(struct hid_device *hid, u16 range);
+	__s16 effect_ids[4];
+	struct klgd_main klgd;
+	struct klgd_plugin *ff_plugin;
 };
 
 static const signed short lg4ff_wheel_effects[] = {
 	FF_CONSTANT,
+	FF_SPRING,
+	FF_DAMPER,
 	FF_AUTOCENTER,
 	-1
 };
@@ -200,6 +208,26 @@ static __s32 lg4ff_adjust_dfp_x_axis(__s32 value, __u16 range)
 		return new_value;
 }
 
+static struct lg4ff_device_entry *lg4ff_get_device_entry(struct input_dev *dev)
+{
+	struct hid_device *hid = input_get_drvdata(dev);
+	struct lg4ff_device_entry *entry;
+	struct lg_drv_data *drv_data;
+
+	drv_data = hid_get_drvdata(hid);
+	if (!drv_data) {
+		hid_err(hid, "Private driver data not found!\n");
+		return NULL;
+	}
+
+	entry = drv_data->device_props;
+	if (!entry) {
+		hid_err(hid, "Device properties not found!\n");
+		return NULL;
+	}
+	return entry;
+}
+
 int lg4ff_adjust_input_event(struct hid_device *hid, struct hid_field *field,
 			     struct hid_usage *usage, __s32 value, struct lg_drv_data *drv_data)
 {
@@ -226,46 +254,148 @@ int lg4ff_adjust_input_event(struct hid_device *hid, struct hid_field *field,
 	}
 }
 
-static int hid_lg4ff_play(struct input_dev *dev, void *data, struct ff_effect *effect)
+static __s8 lg4ff_get_slot(struct lg4ff_device_entry *entry, __s16 effect_id)
 {
-	struct hid_device *hid = input_get_drvdata(dev);
+	int i;
+	
+	printk(KERN_DEBUG "Looking for effect %i, ", effect_id);
+	for (i = 0; i < 4; i++)
+		if (entry->effect_ids[i] == effect_id) {
+			printk(KERN_DEBUG "found slot %i.\n", i);
+			return i;
+		}
+	printk(KERN_DEBUG "found nothing!\n");
+	return -1;
+}
+
+static struct klgd_command * lg4ff_erase(struct input_dev *dev, const struct ff_effect *effect, const int id)
+{
+	struct lg4ff_device_entry *entry = lg4ff_get_device_entry(dev);
+	__s8 slot = lg4ff_get_slot(entry, effect->id);
+	
+	if (slot >= 0) {
+		entry->effect_ids[slot] = -1;
+	}
+	return NULL;
+}
+
+static struct klgd_command * lg4ff_start(struct input_dev *dev, const struct ff_effect *effect, const int id)
+{
+	struct lg4ff_device_entry *entry = lg4ff_get_device_entry(dev);
+	struct klgd_command *c;
+	__s8 slot = lg4ff_get_slot(entry, effect->id);
+
+	if (slot < 0)
+		return NULL;
+
+	c = klgd_alloc_cmd(7);
+	if (!c)
+		return NULL;
+
+	c->bytes[0] = (16 << slot) | 2;
+	return c;
+}
+
+static struct klgd_command * lg4ff_stop(struct input_dev *dev, const struct ff_effect *effect, const int id)
+{
+	struct lg4ff_device_entry *entry = lg4ff_get_device_entry(dev);
+	struct klgd_command *c;
+	__s8 slot = lg4ff_get_slot(entry, effect->id);
+
+	if (slot < 0)
+		return NULL;
+
+	c = klgd_alloc_cmd(7);
+	if (!c)
+		return NULL;
+
+	c->bytes[0] = (16 << slot) | 3;
+	return c;
+}
+
+static struct klgd_command * lg4ff_upload(struct input_dev *dev, const struct ff_effect *effect, const int id)
+{
+	struct lg4ff_device_entry *entry = lg4ff_get_device_entry(dev);
+	struct klgd_command *c;
+	__s8 slot = lg4ff_get_slot(entry, -1);
+	int x, y, cr, cl;
+
+	if (slot < 0)
+		return NULL;
+
+	c = klgd_alloc_cmd(7);
+	if (!c)
+		return NULL;
+	
+	entry->effect_ids[slot] = effect->id;
+	c->bytes[0] = (16 << slot);
+
+	switch (effect->type) {
+		case FF_CONSTANT:
+			c->bytes[1] = 0x08;
+			c->bytes[2] = 0x80 - (effect->u.constant.level * 0xff / 0xffff);
+			c->bytes[3] = 0x80;
+			break;
+		case FF_DAMPER:
+			printk(KERN_DEBUG "Wheel damper: %i %i\n", effect->u.condition[0].right_coeff
+			                                         , effect->u.condition[0].left_coeff);
+
+			/* calculate damper force values */
+			x = max(effect->u.condition[0].right_coeff / 2048, -15);
+			y = max(effect->u.condition[0].left_coeff / 2048, -15);
+			c->bytes[1] = 0x0C;
+			c->bytes[2] = abs(y);
+			c->bytes[3] = y < 0;
+			c->bytes[4] = abs(x);
+			c->bytes[5] = x < 0;
+			c->bytes[6] = 0x01;
+			break;
+		case FF_SPRING:
+			printk(KERN_DEBUG "Wheel spring coef: %i % i, sat: %i center: %i deadband: %i\n",
+			                   effect->u.condition[0].right_coeff,
+			                   effect->u.condition[0].left_coeff,
+			                   effect->u.condition[0].right_saturation,
+			                   effect->u.condition[0].center,
+			                   effect->u.condition[0].deadband);
+
+			/* calculate offsets */
+			x = clamp(effect->u.condition[0].center - effect->u.condition[0].deadband/2 + 0x8000, 0, 0xffff) >> 5;
+			y = clamp(effect->u.condition[0].center + effect->u.condition[0].deadband/2 + 0x8000, 0, 0xffff) >> 5;
+			printk(KERN_DEBUG "offsets %x %x\n", x, y);
+			/* calculate coefs */
+			cr = max(effect->u.condition[0].right_coeff / 2048, -15);
+			cl = max(effect->u.condition[0].left_coeff / 2048, -15);
+			c->bytes[1] = 0x0B;
+			c->bytes[2] = x >> 3;
+			c->bytes[3] = y >> 3;
+			c->bytes[4] = 16 * abs(cr) + abs(cl);
+			c->bytes[5] = (x & 7) * 32 + (cr & 16) + (y & 7) * 2 + (cl < 0);
+			c->bytes[6] = max(effect->u.condition[0].right_saturation / 256, 1);
+			break;
+		default:
+			printk(KERN_DEBUG "Unexpected force type %i!", effect->type);		
+	}
+	return c;
+}
+
+int lg4ff_klgd_callback(void *data, const struct klgd_command_stream *s)
+{
+	struct hid_device *hid = (struct hid_device *)data;
+	size_t idx;
 	struct list_head *report_list = &hid->report_enum[HID_OUTPUT_REPORT].report_list;
 	struct hid_report *report = list_entry(report_list->next, struct hid_report, list);
 	__s32 *value = report->field[0]->value;
-	int x;
+	int i;
 
-#define CLAMP(x) do { if (x < 0) x = 0; else if (x > 0xff) x = 0xff; } while (0)
-
-	switch (effect->type) {
-	case FF_CONSTANT:
-		x = effect->u.ramp.start_level + 0x80;	/* 0x80 is no force */
-		CLAMP(x);
-
-		if (x == 0x80) {
-			/* De-activate force in slot-1*/
-			value[0] = 0x13;
-			value[1] = 0x00;
-			value[2] = 0x00;
-			value[3] = 0x00;
-			value[4] = 0x00;
-			value[5] = 0x00;
-			value[6] = 0x00;
-
-			hid_hw_request(hid, report, HID_REQ_SET_REPORT);
-			return 0;
-		}
-
-		value[0] = 0x11;	/* Slot 1 */
-		value[1] = 0x08;
-		value[2] = x;
-		value[3] = 0x80;
-		value[4] = 0x00;
-		value[5] = 0x00;
-		value[6] = 0x00;
-
-		hid_hw_request(hid, report, HID_REQ_SET_REPORT);
-		break;
+	for (idx = 0; idx < s->count; idx++) {
+		for(i=0; i<7; i++)
+			value[i] = (__u8)s->commands[idx]->bytes[i];
+		hid_hw_request(hid, report, HID_REQ_SET_REPORT);	
+		//hid_hw_raw_request(hid, s->commands[idx]->bytes[0], s->commands[idx]->bytes, 7, HID_OUTPUT_REPORT, HID_REQ_SET_REPORT);
+		/* Error ignored for now */
+		printk(KERN_DEBUG "Wheel command: %02x %02x %02x %02x %02x %02x %02x\n", s->commands[idx]->bytes[0], s->commands[idx]->bytes[1], s->commands[idx]->bytes[2], s->commands[idx]->bytes[3], s->commands[idx]->bytes[4], s->commands[idx]->bytes[5], s->commands[idx]->bytes[6]);
 	}
+
 	return 0;
 }
 
@@ -676,8 +806,11 @@ int lg4ff_init(struct hid_device *hid, const int switch_force_mode)
 	struct lg4ff_device_entry *entry;
 	struct lg_drv_data *drv_data;
 	struct usb_device_descriptor *udesc;
-	int error, i, j;
+	int error, i, j, ret;
 	u16 bcdDevice;
+	unsigned long ffbits = FFPL_EFBIT(FF_CONSTANT) | 
+	                       FFPL_EFBIT(FF_SPRING) |
+	                       FFPL_EFBIT(FF_DAMPER); // TEMP
 
 	/* Check that the report looks ok */
 	if (!hid_validate_values(hid, HID_OUTPUT_REPORT, 0, 0, 7))
@@ -712,11 +845,6 @@ int lg4ff_init(struct hid_device *hid, const int switch_force_mode)
 	for (j = 0; lg4ff_devices[i].ff_effects[j] >= 0; j++)
 		set_bit(lg4ff_devices[i].ff_effects[j], dev->ffbit);
 
-	error = input_ff_create_memless(dev, NULL, hid_lg4ff_play);
-
-	if (error)
-		return error;
-
 	/* Get private driver data */
 	drv_data = hid_get_drvdata(hid);
 	if (!drv_data) {
@@ -736,6 +864,28 @@ int lg4ff_init(struct hid_device *hid, const int switch_force_mode)
 	entry->min_range = lg4ff_devices[i].min_range;
 	entry->max_range = lg4ff_devices[i].max_range;
 	entry->set_range = lg4ff_devices[i].set_range;
+	entry->effect_ids[0] = entry->effect_ids[1] = entry->effect_ids[2] = entry->effect_ids[3] = -1;
+
+	/* initialize klgd with a single plugin*/
+	ret = klgd_init(&entry->klgd, hid, lg4ff_klgd_callback, 1);
+	if (ret) {
+		printk(KERN_ERR "Cannot initialize KLGD\n");
+		return ret;
+	}
+
+	/* initialize the klgd force feedback plugin */
+	ret = ffpl_init_plugin(&entry->ff_plugin, dev, EFFECT_COUNT, ffbits,
+			       lg4ff_upload, lg4ff_start, lg4ff_stop, lg4ff_erase);
+	if (ret) {
+		printk(KERN_ERR "KLGDFF: Cannot init plugin\n");
+		return ret;
+	}
+
+	ret = klgd_register_plugin(&entry->klgd, 0, entry->ff_plugin);
+	if (ret) {
+		printk(KERN_ERR "KLGDFF: Cannot register plugin\n");
+		return ret;
+	}
 
 	/* Check if autocentering is available and
 	 * set the centering force to zero by default */
@@ -851,6 +1001,8 @@ int lg4ff_deinit(struct hid_device *hid)
 		}
 	}
 #endif
+
+	//klgd_deinit(&entry->klgd);
 
 	/* Deallocate memory */
 	kfree(entry);
