@@ -326,12 +326,13 @@ static struct klgd_command * lg4ff_upload(struct input_dev *dev, const struct ff
 	c = klgd_alloc_cmd(7);
 	if (!c)
 		return NULL;
-	
+
 	entry->effect_ids[slot] = effect->id;
 	c->bytes[0] = (16 << slot);
 
 	switch (effect->type) {
 		case FF_CONSTANT:
+			printk(KERN_DEBUG "Wheel constant: %i, direction %u\n", effect->u.constant.level * 0xff / 0xffff, effect->direction);
 			c->bytes[1] = 0x08;
 			c->bytes[2] = 0x80 - (effect->u.constant.level * 0xff / 0xffff);
 			c->bytes[3] = 0x80;
@@ -381,19 +382,17 @@ static struct klgd_command * lg4ff_upload(struct input_dev *dev, const struct ff
 int lg4ff_klgd_callback(void *data, const struct klgd_command_stream *s)
 {
 	struct hid_device *hid = (struct hid_device *)data;
+	struct usb_device *usbdev = hid_to_usb_dev(hid); 
 	size_t idx;
-	struct list_head *report_list = &hid->report_enum[HID_OUTPUT_REPORT].report_list;
-	struct hid_report *report = list_entry(report_list->next, struct hid_report, list);
-	__s32 *value = report->field[0]->value;
-	int i;
+	int ret = 0/*, i*/;
 
+	printk(KERN_DEBUG "Command count: %lu\n", s->count);
 	for (idx = 0; idx < s->count; idx++) {
-		for(i=0; i<7; i++)
-			value[i] = (__u8)s->commands[idx]->bytes[i];
-		hid_hw_request(hid, report, HID_REQ_SET_REPORT);	
-		//hid_hw_raw_request(hid, s->commands[idx]->bytes[0], s->commands[idx]->bytes, 7, HID_OUTPUT_REPORT, HID_REQ_SET_REPORT);
-		/* Error ignored for now */
-		printk(KERN_DEBUG "Wheel command: %02x %02x %02x %02x %02x %02x %02x\n", s->commands[idx]->bytes[0], s->commands[idx]->bytes[1], s->commands[idx]->bytes[2], s->commands[idx]->bytes[3], s->commands[idx]->bytes[4], s->commands[idx]->bytes[5], s->commands[idx]->bytes[6]);
+		const struct klgd_command *c = s->commands[idx];
+		int xferred;
+
+		ret = usb_interrupt_msg(usbdev, usb_sndintpipe(usbdev, 0x01), c->bytes, c->length, &xferred, 1000);
+		printk(KERN_DEBUG "Wheel command: %02x %02x %02x %02x %02x %02x %02x, ret = %d, xferred = %d\n", c->bytes[0], c->bytes[1], c->bytes[2], c->bytes[3], c->bytes[4], c->bytes[5], c->bytes[6], ret, xferred);
 	}
 
 	return 0;
