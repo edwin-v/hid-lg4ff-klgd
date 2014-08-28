@@ -880,7 +880,7 @@ int lg4ff_init(struct hid_device *hid, const int switch_force_mode)
 		return ret;
 	}
 
-	ret = klgd_register_plugin(&entry->klgd, 0, entry->ff_plugin);
+	ret = klgd_register_plugin(&entry->klgd, 0, entry->ff_plugin, true);
 	if (ret) {
 		printk(KERN_ERR "KLGDFF: Cannot register plugin\n");
 		return ret;
@@ -1001,7 +1001,7 @@ int lg4ff_deinit(struct hid_device *hid)
 	}
 #endif
 
-	//klgd_deinit(&entry->klgd);
+	klgd_deinit(&entry->klgd);
 
 	/* Deallocate memory */
 	kfree(entry);
