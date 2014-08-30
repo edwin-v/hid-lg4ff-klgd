@@ -39,6 +39,11 @@
 #define EFFECT_COUNT 4
 #define LG4FF_FFEX_BCDDEVICE 0x2100
 
+#define CMD_DOWNLOAD_FORCE	0
+#define CMD_PLAY_FORCE		2
+#define CMD_STOP_FORCE		3
+#define CMD_REFRESH_FORCE	12
+
 static void hid_lg4ff_set_range_dfp(struct hid_device *hid, u16 range);
 static void hid_lg4ff_set_range_g25(struct hid_device *hid, u16 range);
 static ssize_t lg4ff_range_show(struct device *dev, struct device_attribute *attr, char *buf);
@@ -57,7 +62,8 @@ struct lg4ff_device_entry {
 #endif
 	struct list_head list;
 	void (*set_range)(struct hid_device *hid, u16 range);
-	__s16 effect_ids[4];
+	__s16 effect_ids[EFFECT_COUNT];
+	__u8 slot_playing[EFFECT_COUNT];
 	struct klgd_main klgd;
 	struct klgd_plugin *ff_plugin;
 };
@@ -292,7 +298,8 @@ static struct klgd_command * lg4ff_start(struct input_dev *dev, const struct ff_
 	if (!c)
 		return NULL;
 
-	c->bytes[0] = (16 << slot) | 2;
+	c->bytes[0] = (16 << slot) | CMD_PLAY_FORCE;
+	entry->slot_playing[slot] = 1;
 	return c;
 }
 
@@ -309,7 +316,8 @@ static struct klgd_command * lg4ff_stop(struct input_dev *dev, const struct ff_e
 	if (!c)
 		return NULL;
 
-	c->bytes[0] = (16 << slot) | 3;
+	c->bytes[0] = (16 << slot) | CMD_STOP_FORCE;
+	entry->slot_playing[slot] = 0;
 	return c;
 }
 
@@ -317,29 +325,47 @@ static struct klgd_command * lg4ff_upload(struct input_dev *dev, const struct ff
 {
 	struct lg4ff_device_entry *entry = lg4ff_get_device_entry(dev);
 	struct klgd_command *c;
-	__s8 slot = lg4ff_get_slot(entry, -1);
+	__s8 cmd, slot = lg4ff_get_slot(entry, effect->id);
 	int x, y, cr, cl;
 
-	if (slot < 0)
-		return NULL;
+	if (slot >= 0) {
+		// effect exists
+		if (entry->slot_playing[slot])
+			cmd = CMD_REFRESH_FORCE; // replace effect
+		else
+			cmd = CMD_DOWNLOAD_FORCE; // upload effect
+	} else {
+		// get new effect slot
+		slot = lg4ff_get_slot(entry, -1);
+
+		if (slot < 0)
+			return NULL;
+
+		entry->effect_ids[slot] = effect->id;
+		cmd = CMD_DOWNLOAD_FORCE;
+	}
 
 	c = klgd_alloc_cmd(7);
 	if (!c)
 		return NULL;
 
-	entry->effect_ids[slot] = effect->id;
-	c->bytes[0] = (16 << slot);
+	c->bytes[0] = (16 << slot) | cmd;
 
 	switch (effect->type) {
 		case FF_CONSTANT:
 			printk(KERN_DEBUG "Wheel constant: %i, direction %u\n", effect->u.constant.level * 0xff / 0xffff, effect->direction);
-			c->bytes[1] = 0x08;
-			c->bytes[2] = 0x80 - (effect->u.constant.level * 0xff / 0xffff);
-			c->bytes[3] = 0x80;
+			x = 0x80 - effect->u.constant.level * 0xff / 0xffff;
+			c->bytes[1] = 0x00;
+			c->bytes[2] = x;
+			c->bytes[3] = x;
+			c->bytes[4] = x;
+			c->bytes[5] = x;
 			break;
 		case FF_DAMPER:
-			printk(KERN_DEBUG "Wheel damper: %i %i\n", effect->u.condition[0].right_coeff
-			                                         , effect->u.condition[0].left_coeff);
+			printk(KERN_DEBUG "Wheel damper: %i %i, sat %i %i\n", effect->u.condition[0].right_coeff
+			                                                    , effect->u.condition[0].left_coeff
+			                                                    , effect->u.condition[0].right_saturation
+			                                                    , effect->u.condition[0].left_saturation);
 
 			/* calculate damper force values */
 			x = max(effect->u.condition[0].right_coeff / 2048, -15);
@@ -349,7 +375,8 @@ static struct klgd_command * lg4ff_upload(struct input_dev *dev, const struct ff
 			c->bytes[3] = y < 0;
 			c->bytes[4] = abs(x);
 			c->bytes[5] = x < 0;
-			c->bytes[6] = 0x01;
+			// saturation only supported on DFP and newer
+			c->bytes[6] = max(effect->u.condition[0].right_saturation / 256, 2);
 			break;
 		case FF_SPRING:
 			printk(KERN_DEBUG "Wheel spring coef: %i % i, sat: %i center: %i deadband: %i\n",
