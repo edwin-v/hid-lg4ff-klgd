@@ -465,10 +465,9 @@ static int lg4ff_upload(struct lg4ff_device_entry *entry, struct klgd_command_st
 
 	switch (effect->type) {
 		case FF_CONSTANT:
-			printk(KERN_DEBUG "Wheel constant: %i, direction %u\n", effect->u.constant.level / 2, effect->direction);
-			x = 0x80 + effect->u.constant.level / 2;
-			c->bytes[1] = 0x00;
-			c->bytes[2+slot] = x;
+			ffpl_lvl_dir_to_x_y(effect->u.constant.level, effect->direction, &x, &y);
+			printk(KERN_DEBUG "Wheel constant: %i, direction %u  => %i\n", effect->u.constant.level, effect->direction, x * 0x7f / 0x7fff);
+			c->bytes[2+slot] = 0x80 + x * 0x7f / 0x7fff;
 			break;
 		case FF_DAMPER:
 			printk(KERN_DEBUG "Wheel damper: %i %i, sat %i %i\n", effect->u.condition[0].right_coeff
@@ -519,17 +518,22 @@ static int lg4ff_upload(struct lg4ff_device_entry *entry, struct klgd_command_st
 int lg4ff_klgd_callback(void *data, const struct klgd_command_stream *s)
 {
 	struct hid_device *hid = (struct hid_device *)data;
-	struct usb_device *usbdev = hid_to_usb_dev(hid); 
+	struct list_head *report_list = &hid->report_enum[HID_OUTPUT_REPORT].report_list;
+	struct hid_report *report = list_entry(report_list->next, struct hid_report, list);
+	s32 *value = report->field[0]->value;
 	size_t idx;
-	int ret = 0/*, i*/;
+	int i;
 
 	printk(KERN_DEBUG "Command count: %lu\n", s->count);
 	for (idx = 0; idx < s->count; idx++) {
 		const struct klgd_command *c = s->commands[idx];
-		int xferred;
+	
+		for (i = 0; i < 7; i++)
+			value[i] = c->bytes[i];
 
-		ret = usb_interrupt_msg(usbdev, usb_sndintpipe(usbdev, 0x01), c->bytes, c->length, &xferred, 1000);
-		printk(KERN_DEBUG "Wheel command: %02x %02x %02x %02x %02x %02x %02x, ret = %d, xferred = %d\n", c->bytes[0], c->bytes[1], c->bytes[2], c->bytes[3], c->bytes[4], c->bytes[5], c->bytes[6], ret, xferred);
+		hid_hw_request(hid, report, HID_REQ_SET_REPORT);
+
+		printk(KERN_DEBUG "Wheel command: %02x %02x %02x %02x %02x %02x %02x\n", c->bytes[0], c->bytes[1], c->bytes[2], c->bytes[3], c->bytes[4], c->bytes[5], c->bytes[6]);
 	}
 
 	return 0;
