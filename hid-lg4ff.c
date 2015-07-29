@@ -72,6 +72,7 @@
 #define EFFECT_COUNT 4
 
 #define CMD_DOWNLOAD_FORCE	0
+#define CMD_DOWNLOAD_PLAY_FORCE	1
 #define CMD_PLAY_FORCE		2
 #define CMD_STOP_FORCE		3
 #define CMD_REFRESH_FORCE	12
@@ -434,7 +435,7 @@ static int lg4ff_stop(struct lg4ff_device_entry *entry, struct klgd_command_stre
 }
 
 static int lg4ff_upload(struct lg4ff_device_entry *entry, struct klgd_command_stream *s,
-                        const struct ff_effect *effect)
+                        const struct ff_effect *effect, bool start, bool overwrite)
 {
 	struct klgd_command *c;
 	s8 cmd, slot = lg4ff_get_slot(entry, effect->id);
@@ -442,10 +443,10 @@ static int lg4ff_upload(struct lg4ff_device_entry *entry, struct klgd_command_st
 
 	if (slot >= 0) {
 		// effect exists
-		if (entry->wdata.slot_playing[slot])
-			cmd = CMD_REFRESH_FORCE; // replace effect
+		if (entry->wdata.slot_playing[slot] && !overwrite)
+			cmd = CMD_REFRESH_FORCE;
 		else
-			cmd = CMD_DOWNLOAD_FORCE; // upload effect
+			cmd = start ? CMD_DOWNLOAD_PLAY_FORCE : CMD_DOWNLOAD_FORCE;
 	} else {
 		// get new effect slot
 		slot = lg4ff_get_slot(entry, -1);
@@ -454,7 +455,7 @@ static int lg4ff_upload(struct lg4ff_device_entry *entry, struct klgd_command_st
 			return -EINVAL;
 
 		entry->wdata.effect_ids[slot] = effect->id;
-		cmd = CMD_DOWNLOAD_FORCE;
+		cmd = start ? CMD_DOWNLOAD_PLAY_FORCE : CMD_DOWNLOAD_FORCE;
 	}
 
 	c = klgd_alloc_cmd(7);
@@ -537,6 +538,7 @@ int lg4ff_klgd_callback(void *data, const struct klgd_command_stream *s)
 int lg4ff_control(struct input_dev *dev, struct klgd_command_stream *s, const enum ffpl_control_command cmd, const union ffpl_control_data data)
 {
 	struct lg4ff_device_entry *entry = lg4ff_get_device_entry(dev);
+	int err;
 
 	if (!entry)
 		return -EINVAL;
@@ -551,20 +553,26 @@ int lg4ff_control(struct input_dev *dev, struct klgd_command_stream *s, const en
 
 	switch (cmd) {
 	case FFPL_EMP_TO_UPL:
-		return lg4ff_upload(entry, s, data.effects.cur);
-		break;
+		return lg4ff_upload(entry, s, data.effects.cur, false, false);
 	case FFPL_UPL_TO_SRT:
 		return lg4ff_start(entry, s, data.effects.cur);
-		break;
 	case FFPL_SRT_TO_UPL:
 		return lg4ff_stop(entry, s, data.effects.cur);
-		break;
 	case FFPL_UPL_TO_EMP:
 		return lg4ff_erase(entry, s, data.effects.cur);
-		break;
 	case FFPL_SRT_TO_UDT:
-		return lg4ff_upload(entry, s, data.effects.cur);
-		break;
+		return lg4ff_upload(entry, s, data.effects.cur, false, false);
+	case FFPL_EMP_TO_SRT:
+		return lg4ff_upload(entry, s, data.effects.cur, true, false);
+	case FFPL_SRT_TO_EMP:
+		err = lg4ff_stop(entry, s, data.effects.cur);
+		if (err)
+			return err;
+		return lg4ff_erase(entry, s, data.effects.cur);
+	case FFPL_OWR_TO_UPL:
+		return lg4ff_upload(entry, s, data.effects.cur, false, true);
+	case FFPL_OWR_TO_SRT:
+		return lg4ff_upload(entry, s, data.effects.cur, true, true);
 	default:
 		printk(KERN_NOTICE "HID-LG4FF - Unhandled command\n");
 		break;
@@ -572,6 +580,7 @@ int lg4ff_control(struct input_dev *dev, struct klgd_command_stream *s, const en
 
 	return 0;
 }
+enum upload_mode { UPLOAD, UPLOAD_START, UPLOAD_OVERWRITE, UPLOAD_OVERWRITE_START };
 
 /* Sends default autocentering command compatible with
  * all wheels except Formula Force EX */
@@ -1412,7 +1421,8 @@ int lg4ff_init(struct hid_device *hid)
 
 	/* initialize the klgd force feedback plugin */
 	error = ffpl_init_plugin(&entry->wdata.ff_plugin, dev, EFFECT_COUNT, ffbits,
-	                         0, lg4ff_control);
+	                         FFPL_HAS_EMP_TO_SRT | FFPL_HAS_SRT_TO_EMP | FFPL_REPLACE_UPLOADED | FFPL_REPLACE_STARTED, 
+	                         lg4ff_control);
 	if (error) {
 		printk(KERN_ERR "KLGDFF: Cannot init plugin\n");
 		goto err_init;
