@@ -580,7 +580,6 @@ int lg4ff_control(struct input_dev *dev, struct klgd_command_stream *s, const en
 
 	return 0;
 }
-enum upload_mode { UPLOAD, UPLOAD_START, UPLOAD_OVERWRITE, UPLOAD_OVERWRITE_START };
 
 /* Sends default autocentering command compatible with
  * all wheels except Formula Force EX */
