@@ -517,23 +517,18 @@ static int lg4ff_upload(struct lg4ff_device_entry *entry, struct klgd_command_st
 
 int lg4ff_klgd_callback(void *data, const struct klgd_command_stream *s)
 {
-	struct hid_device *hid = (struct hid_device *)data;
-	struct list_head *report_list = &hid->report_enum[HID_OUTPUT_REPORT].report_list;
-	struct hid_report *report = list_entry(report_list->next, struct hid_report, list);
-	s32 *value = report->field[0]->value;
+	int ret;
 	size_t idx;
-	int i;
 
 	printk(KERN_DEBUG "Command count: %lu\n", s->count);
 	for (idx = 0; idx < s->count; idx++) {
 		const struct klgd_command *c = s->commands[idx];
 	
-		for (i = 0; i < 7; i++)
-			value[i] = c->bytes[i];
+		ret = hid_hw_output_report((struct hid_device *)data, c->bytes, 7);
 
-		hid_hw_request(hid, report, HID_REQ_SET_REPORT);
+		printk(KERN_DEBUG "Wheel command: %02x %02x %02x %02x %02x %02x %02x, xferred = %i\n", c->bytes[0], c->bytes[1], c->bytes[2], c->bytes[3], c->bytes[4], c->bytes[5], c->bytes[6], ret);
 
-		printk(KERN_DEBUG "Wheel command: %02x %02x %02x %02x %02x %02x %02x\n", c->bytes[0], c->bytes[1], c->bytes[2], c->bytes[3], c->bytes[4], c->bytes[5], c->bytes[6]);
+		/* Error handling by KLGD later? How to deal with partial failure when sending multiple commands? */
 	}
 
 	return 0;
