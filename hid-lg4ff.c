@@ -99,6 +99,7 @@ struct lg4ff_wheel_data {
 	u8 slot_playing[EFFECT_COUNT];
 	struct klgd_main klgd;
 	struct klgd_plugin *ff_plugin;
+	u16 gain;
 };
 
 struct lg4ff_device_entry {
@@ -344,7 +345,8 @@ static void lg4ff_init_wheel_data(struct lg4ff_wheel_data * const wdata, const s
 						     .alternate_modes = alternate_modes,
 						     .real_tag = real_tag,
 						     .real_name = real_name,
-						     .effect_ids = {-1, -1, -1, -1} };
+						     .effect_ids = {-1, -1, -1, -1},
+						     .gain = 0xffff};
 
 		memcpy(wdata, &t_wdata, sizeof(t_wdata));
 	}
@@ -393,6 +395,14 @@ static int lg4ff_erase(struct lg4ff_device_entry *entry, struct klgd_command_str
 		return -EINVAL;
 
 	entry->wdata.effect_ids[slot] = -1;
+	return 0;
+}
+
+static int lg4ff_set_gain(struct lg4ff_device_entry *entry, const u16 gain)
+{
+	entry->wdata.gain = gain;
+	printk(KERN_DEBUG "Setting gain to %u\n", gain);
+
 	return 0;
 }
 
@@ -466,10 +476,15 @@ static int lg4ff_upload(struct lg4ff_device_entry *entry, struct klgd_command_st
 
 	switch (effect->type) {
 		case FF_CONSTANT:
-			ffpl_lvl_dir_to_x_y(effect->u.constant.level, effect->direction, &x, &y);
+		{
+			const u16 gain = entry->wdata.gain;
+			const u16 level = effect->u.constant.level * gain / 0xffff;
+
+			ffpl_lvl_dir_to_x_y(level, effect->direction, &x, &y);
 			printk(KERN_DEBUG "Wheel constant: %i, direction %u  => %i\n", effect->u.constant.level, effect->direction, x * 0x7f / 0x7fff);
 			c->bytes[2+slot] = 0x80 + x * 0x7f / 0x7fff;
 			break;
+		}
 		case FF_DAMPER:
 			printk(KERN_DEBUG "Wheel damper: %i %i, sat %i %i\n", effect->u.condition[0].right_coeff
 			                                                    , effect->u.condition[0].left_coeff
@@ -573,6 +588,8 @@ int lg4ff_control(struct input_dev *dev, struct klgd_command_stream *s, const en
 		return lg4ff_upload(entry, s, data.effects.cur, false, true);
 	case FFPL_OWR_TO_SRT:
 		return lg4ff_upload(entry, s, data.effects.cur, true, true);
+	case FFPL_SET_GAIN:
+		return lg4ff_set_gain(entry, data.gain);
 	default:
 		printk(KERN_NOTICE "HID-LG4FF - Unhandled command\n");
 		break;
