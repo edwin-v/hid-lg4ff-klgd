@@ -100,6 +100,7 @@ struct lg4ff_wheel_data {
 	struct klgd_main klgd;
 	struct klgd_plugin *ff_plugin;
 	u16 gain;
+	bool ffex_autocenter;
 };
 
 struct lg4ff_device_entry {
@@ -372,6 +373,92 @@ static struct lg4ff_device_entry *lg4ff_get_device_entry(struct input_dev *dev)
 	return entry;
 }
 
+/* Sends default autocentering command compatible with
+ * all wheels except Formula Force EX */
+static int lg4ff_set_autocenter_default(struct lg4ff_device_entry *entry, struct klgd_command_stream *s, u16 magnitude)
+{
+	u32 expand_a, expand_b;
+	struct klgd_command *c;
+
+	if (magnitude == 0) {
+		c = klgd_alloc_cmd(7);
+		if (!c)
+			return -EAGAIN;
+
+		c->bytes[0] = 0xf5;
+		c->bytes[1] = 0x00;
+		c->bytes[2] = 0x00;
+		c->bytes[3] = 0x00;
+		c->bytes[4] = 0x00;
+		c->bytes[5] = 0x00;
+		c->bytes[6] = 0x00;
+
+		return klgd_append_cmd(s, c);
+	}
+
+	if (magnitude <= 0xaaaa) {
+		expand_a = 0x0c * magnitude;
+		expand_b = 0x80 * magnitude;
+	} else {
+		expand_a = (0x0c * 0xaaaa) + 0x06 * (magnitude - 0xaaaa);
+		expand_b = (0x80 * 0xaaaa) + 0xff * (magnitude - 0xaaaa);
+	}
+
+	/* Adjust for non-MOMO wheels */
+	switch (entry->wdata.product_id) {
+	case USB_DEVICE_ID_LOGITECH_MOMO_WHEEL:
+	case USB_DEVICE_ID_LOGITECH_MOMO_WHEEL2:
+		break;
+	default:
+		expand_a = expand_a >> 1;
+		break;
+	}
+
+	c = klgd_alloc_cmd(14);
+	if (!c)
+		return -EAGAIN;
+
+	c->bytes[0] = 0xfe;
+	c->bytes[1] = 0x0d;
+	c->bytes[2] = expand_a / 0xaaaa;
+	c->bytes[3] = expand_a / 0xaaaa;
+	c->bytes[4] = expand_b / 0xaaaa;
+	c->bytes[5] = 0x00;
+	c->bytes[6] = 0x00;
+
+	/* Activate Auto-Center */
+	c->bytes[7] = 0x14;
+	c->bytes[8] = 0x00;
+	c->bytes[9] = 0x00;
+	c->bytes[10] = 0x00;
+	c->bytes[11] = 0x00;
+	c->bytes[12] = 0x00;
+	c->bytes[13] = 0x00;
+
+	return klgd_append_cmd(s, c);
+}
+
+/* Sends autocentering command compatible with Formula Force EX */
+static int lg4ff_set_autocenter_ffex(struct lg4ff_device_entry *entry, struct klgd_command_stream *s, u16 magnitude)
+{
+	struct klgd_command *c;
+	magnitude = magnitude * 90 / 65535;
+
+	c = klgd_alloc_cmd(7);
+	if (!c)
+		return -EAGAIN;
+
+	c->bytes[0] = 0xfe;
+	c->bytes[1] = 0x03;
+	c->bytes[2] = magnitude >> 14;
+	c->bytes[3] = magnitude >> 14;
+	c->bytes[4] = magnitude;
+	c->bytes[5] = 0x00;
+	c->bytes[6] = 0x00;
+
+	return klgd_append_cmd(s, c);
+}
+
 static __s8 lg4ff_get_slot(struct lg4ff_device_entry *entry, __s16 effect_id)
 {
 	int i;
@@ -396,6 +483,13 @@ static int lg4ff_erase(struct lg4ff_device_entry *entry, struct klgd_command_str
 
 	entry->wdata.effect_ids[slot] = -1;
 	return 0;
+}
+
+static int lg4ff_set_autocenter(struct lg4ff_device_entry *entry, struct klgd_command_stream *s, const u16 autocenter)
+{
+	if (entry->wdata.ffex_autocenter)
+		return lg4ff_set_autocenter_ffex(entry, s, autocenter);
+	return lg4ff_set_autocenter_default(entry, s, autocenter);
 }
 
 static int lg4ff_set_gain(struct lg4ff_device_entry *entry, const u16 gain)
@@ -590,131 +684,14 @@ int lg4ff_control(struct input_dev *dev, struct klgd_command_stream *s, const en
 		return lg4ff_upload(entry, s, data.effects.cur, true, true);
 	case FFPL_SET_GAIN:
 		return lg4ff_set_gain(entry, data.gain);
+	case FFPL_SET_AUTOCENTER:
+		return lg4ff_set_autocenter(entry, s, data.autocenter);
 	default:
 		printk(KERN_NOTICE "HID-LG4FF - Unhandled command\n");
 		break;
 	}
 
 	return 0;
-}
-
-/* Sends default autocentering command compatible with
- * all wheels except Formula Force EX */
-static void lg4ff_set_autocenter_default(struct input_dev *dev, u16 magnitude)
-{
-	struct hid_device *hid = input_get_drvdata(dev);
-	struct list_head *report_list = &hid->report_enum[HID_OUTPUT_REPORT].report_list;
-	struct hid_report *report = list_entry(report_list->next, struct hid_report, list);
-	s32 *value = report->field[0]->value;
-	u32 expand_a, expand_b;
-	struct lg4ff_device_entry *entry;
-	struct lg_drv_data *drv_data;
-	unsigned long flags;
-
-	drv_data = hid_get_drvdata(hid);
-	if (!drv_data) {
-		hid_err(hid, "Private driver data not found!\n");
-		return;
-	}
-
-	entry = drv_data->device_props;
-	if (!entry) {
-		hid_err(hid, "Device properties not found!\n");
-		return;
-	}
-	value = entry->report->field[0]->value;
-
-	/* De-activate Auto-Center */
-	spin_lock_irqsave(&entry->report_lock, flags);
-	if (magnitude == 0) {
-		value[0] = 0xf5;
-		value[1] = 0x00;
-		value[2] = 0x00;
-		value[3] = 0x00;
-		value[4] = 0x00;
-		value[5] = 0x00;
-		value[6] = 0x00;
-
-		hid_hw_request(hid, entry->report, HID_REQ_SET_REPORT);
-		spin_unlock_irqrestore(&entry->report_lock, flags);
-		return;
-	}
-
-	if (magnitude <= 0xaaaa) {
-		expand_a = 0x0c * magnitude;
-		expand_b = 0x80 * magnitude;
-	} else {
-		expand_a = (0x0c * 0xaaaa) + 0x06 * (magnitude - 0xaaaa);
-		expand_b = (0x80 * 0xaaaa) + 0xff * (magnitude - 0xaaaa);
-	}
-
-	/* Adjust for non-MOMO wheels */
-	switch (entry->wdata.product_id) {
-	case USB_DEVICE_ID_LOGITECH_MOMO_WHEEL:
-	case USB_DEVICE_ID_LOGITECH_MOMO_WHEEL2:
-		break;
-	default:
-		expand_a = expand_a >> 1;
-		break;
-	}
-
-	value[0] = 0xfe;
-	value[1] = 0x0d;
-	value[2] = expand_a / 0xaaaa;
-	value[3] = expand_a / 0xaaaa;
-	value[4] = expand_b / 0xaaaa;
-	value[5] = 0x00;
-	value[6] = 0x00;
-
-	hid_hw_request(hid, entry->report, HID_REQ_SET_REPORT);
-
-	/* Activate Auto-Center */
-	value[0] = 0x14;
-	value[1] = 0x00;
-	value[2] = 0x00;
-	value[3] = 0x00;
-	value[4] = 0x00;
-	value[5] = 0x00;
-	value[6] = 0x00;
-
-	hid_hw_request(hid, entry->report, HID_REQ_SET_REPORT);
-	spin_unlock_irqrestore(&entry->report_lock, flags);
-}
-
-/* Sends autocentering command compatible with Formula Force EX */
-static void lg4ff_set_autocenter_ffex(struct input_dev *dev, u16 magnitude)
-{
-	struct hid_device *hid = input_get_drvdata(dev);
-	struct lg4ff_device_entry *entry;
-	struct lg_drv_data *drv_data;
-	unsigned long flags;
-	s32 *value;
-	magnitude = magnitude * 90 / 65535;
-
-	drv_data = hid_get_drvdata(hid);
-	if (!drv_data) {
-		hid_err(hid, "Private driver data not found!\n");
-		return;
-	}
-
-	entry = drv_data->device_props;
-	if (!entry) {
-		hid_err(hid, "Device properties not found!\n");
-		return;
-	}
-	value = entry->report->field[0]->value;
-
-	spin_lock_irqsave(&entry->report_lock, flags);
-	value[0] = 0xfe;
-	value[1] = 0x03;
-	value[2] = magnitude >> 14;
-	value[3] = magnitude >> 14;
-	value[4] = magnitude;
-	value[5] = 0x00;
-	value[6] = 0x00;
-
-	hid_hw_request(hid, entry->report, HID_REQ_SET_REPORT);
-	spin_unlock_irqrestore(&entry->report_lock, flags);
 }
 
 /* Sends command to set range compatible with G25/G27/Driving Force GT */
@@ -1437,7 +1414,8 @@ int lg4ff_init(struct hid_device *hid)
 
 	/* initialize the klgd force feedback plugin */
 	error = ffpl_init_plugin(&entry->wdata.ff_plugin, dev, EFFECT_COUNT, ffbits,
-	                         FFPL_HAS_EMP_TO_SRT | FFPL_HAS_SRT_TO_EMP | FFPL_REPLACE_UPLOADED | FFPL_REPLACE_STARTED, 
+	                         FFPL_HAS_EMP_TO_SRT | FFPL_HAS_SRT_TO_EMP | FFPL_REPLACE_UPLOADED | FFPL_REPLACE_STARTED |
+				 FFPL_HAS_AUTOCENTER,
 	                         lg4ff_control);
 	if (error) {
 		printk(KERN_ERR "KLGDFF: Cannot init plugin\n");
@@ -1450,18 +1428,11 @@ int lg4ff_init(struct hid_device *hid)
 		goto err_init;
 	}
 
-	/* Check if autocentering is available and
-	 * set the centering force to zero by default */
-	if (test_bit(FF_AUTOCENTER, dev->ffbit)) {
-		/* Formula Force EX expects different autocentering command */
-		if ((bcdDevice >> 8) == LG4FF_FFEX_REV_MAJ &&
-		    (bcdDevice & 0xff) == LG4FF_FFEX_REV_MIN)
-			dev->ff->set_autocenter = lg4ff_set_autocenter_ffex;
-		else
-			dev->ff->set_autocenter = lg4ff_set_autocenter_default;
-
-		dev->ff->set_autocenter(dev, 0);
-	}
+	/* Formula Force EX expects different autocentering command */
+	if ((bcdDevice >> 8) == LG4FF_FFEX_REV_MAJ && (bcdDevice & 0xff) == LG4FF_FFEX_REV_MIN)
+		entry->wdata.ffex_autocenter = true;
+	else
+		entry->wdata.ffex_autocenter = false;
 
 	/* Create sysfs interface */
 	error = device_create_file(&hid->dev, &dev_attr_range);
