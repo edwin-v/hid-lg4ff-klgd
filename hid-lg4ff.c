@@ -576,7 +576,7 @@ static int lg4ff_upload(struct lg4ff_device_entry *entry, struct klgd_command_st
 
 			ffpl_lvl_dir_to_x_y(level, effect->direction, &x, &y);
 			printk(KERN_DEBUG "Wheel constant: %i, direction %u  => %i\n", effect->u.constant.level, effect->direction, x * 0x7f / 0x7fff);
-			c->bytes[2+slot] = 0x80 + x * 0x7f / 0x7fff;
+			c->bytes[2+slot] = 0x80 - x * 0x7f / 0x7fff;
 			break;
 		}
 		case FF_DAMPER:
