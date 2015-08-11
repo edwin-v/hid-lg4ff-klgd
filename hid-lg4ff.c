@@ -1415,7 +1415,7 @@ int lg4ff_init(struct hid_device *hid)
 	/* initialize the klgd force feedback plugin */
 	error = ffpl_init_plugin(&entry->wdata.ff_plugin, dev, EFFECT_COUNT, ffbits,
 	                         FFPL_HAS_EMP_TO_SRT | FFPL_HAS_SRT_TO_EMP | FFPL_REPLACE_UPLOADED | FFPL_REPLACE_STARTED |
-				 FFPL_HAS_AUTOCENTER,
+				 FFPL_MEMLESS_PERIODIC | FFPL_MEMLESS_RAMP | FFPL_CONTROL_TIMING | FFPL_HAS_AUTOCENTER,
 	                         lg4ff_control);
 	if (error) {
 		printk(KERN_ERR "KLGDFF: Cannot init plugin\n");
