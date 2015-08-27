@@ -27,12 +27,12 @@
 #include <linux/input.h>
 #include <linux/usb.h>
 #include <linux/hid.h>
+#include <linux/input/klgd_ff_plugin.h>
 
 #include "usbhid/usbhid.h"
 #include "hid-lg.h"
 #include "hid-lg4ff.h"
 #include "hid-ids.h"
-#include "../input/klgd_ff_plugin.h"
 
 #define to_hid_device(pdev) container_of(pdev, struct hid_device, dev)
 
@@ -567,6 +567,8 @@ static int lg4ff_upload(struct lg4ff_device_entry *entry, struct klgd_command_st
 		return -ENOMEM;
 
 	c->bytes[0] = (16 << slot) | cmd;
+	if (start)
+		entry->wdata.slot_playing[slot] = true;
 
 	switch (effect->type) {
 		case FF_CONSTANT:
@@ -644,7 +646,7 @@ int lg4ff_klgd_callback(void *data, const struct klgd_command_stream *s)
 	return 0;
 }
 
-int lg4ff_control(struct input_dev *dev, struct klgd_command_stream *s, const enum ffpl_control_command cmd, const union ffpl_control_data data)
+int lg4ff_control(struct input_dev *dev, struct klgd_command_stream *s, const enum ffpl_control_command cmd, const union ffpl_control_data data, void *user)
 {
 	struct lg4ff_device_entry *entry = lg4ff_get_device_entry(dev);
 	int err;
@@ -659,7 +661,7 @@ int lg4ff_control(struct input_dev *dev, struct klgd_command_stream *s, const en
 		printk(KERN_WARNING "HID-LG4FF: NULL effect, this _cannot_ happen!\n");
 		return -EINVAL;
 	}
-
+printk(KERN_WARNING "command %d\n", (int)cmd);
 	switch (cmd) {
 	case FFPL_EMP_TO_UPL:
 		return lg4ff_upload(entry, s, data.effects.cur, false, false);
@@ -1415,8 +1417,8 @@ int lg4ff_init(struct hid_device *hid)
 	/* initialize the klgd force feedback plugin */
 	error = ffpl_init_plugin(&entry->wdata.ff_plugin, dev, EFFECT_COUNT, ffbits,
 	                         FFPL_HAS_EMP_TO_SRT | FFPL_HAS_SRT_TO_EMP | FFPL_REPLACE_UPLOADED | FFPL_REPLACE_STARTED |
-				 FFPL_MEMLESS_PERIODIC | FFPL_MEMLESS_RAMP | FFPL_CONTROL_TIMING | FFPL_HAS_AUTOCENTER,
-	                         lg4ff_control);
+				 FFPL_MEMLESS_CONSTANT | FFPL_MEMLESS_PERIODIC | FFPL_MEMLESS_RAMP | FFPL_TIMING_CONDITION,
+	                         lg4ff_control, NULL);
 	if (error) {
 		printk(KERN_ERR "KLGDFF: Cannot init plugin\n");
 		goto err_init;
