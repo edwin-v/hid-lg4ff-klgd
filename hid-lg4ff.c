@@ -1325,16 +1325,7 @@ int lg4ff_init(struct hid_device *hid)
 	int error, i, j;
 	int mmode_ret, mmode_idx = -1;
 	u16 real_product_id;
-	unsigned long ffbits = FFPL_EFBIT(FF_CONSTANT) |
-			       FFPL_EFBIT(FF_RUMBLE) |
-			       FFPL_EFBIT(FF_PERIODIC) | FFPL_EFBIT(FF_SINE)
-						       | FFPL_EFBIT(FF_SQUARE)
-						       | FFPL_EFBIT(FF_SAW_UP)
-						       | FFPL_EFBIT(FF_SAW_DOWN)
-						       | FFPL_EFBIT(FF_TRIANGLE) |
-			       FFPL_EFBIT(FF_RAMP) |
-	                       FFPL_EFBIT(FF_SPRING) |
-	                       FFPL_EFBIT(FF_DAMPER); // TEMP
+	unsigned long ffbits;
 
 	/* Check that the report looks ok */
 	if (!hid_validate_values(hid, HID_OUTPUT_REPORT, 0, 0, 7))
@@ -1396,10 +1387,6 @@ int lg4ff_init(struct hid_device *hid)
 		}
 	}
 
-	/* Set supported force feedback capabilities */
-	for (j = 0; lg4ff_devices[i].ff_effects[j] >= 0; j++)
-		set_bit(lg4ff_devices[i].ff_effects[j], dev->ffbit);
-
 	/* Initialize device properties */
 	if (mmode_ret == LG4FF_MMODE_IS_MULTIMODE) {
 		BUG_ON(mmode_idx == -1);
@@ -1413,6 +1400,10 @@ int lg4ff_init(struct hid_device *hid)
 		printk(KERN_ERR "Cannot initialize KLGD\n");
 		goto err_init;
 	}
+
+	/* Set supported force feedback capabilities */
+	for (i = 0; lg4ff_wheel_effects[i] >= 0; i++)
+		set_bit(lg4ff_wheel_effects[i] - FF_EFFECT_MIN, &ffbits);
 
 	/* initialize the klgd force feedback plugin */
 	error = ffpl_init_plugin(&entry->wdata.ff_plugin, dev, EFFECT_COUNT, ffbits,
