@@ -414,7 +414,7 @@ static int lg4ff_set_autocenter_default(struct lg4ff_device_entry *entry, struct
 		break;
 	}
 
-	c = klgd_alloc_cmd(14);
+	c = klgd_alloc_cmd(7);
 	if (!c)
 		return -EAGAIN;
 
@@ -426,14 +426,20 @@ static int lg4ff_set_autocenter_default(struct lg4ff_device_entry *entry, struct
 	c->bytes[5] = 0x00;
 	c->bytes[6] = 0x00;
 
+	klgd_append_cmd(s, c);
+	
+	c = klgd_alloc_cmd(7);
+	if (!c)
+		return -EAGAIN;
+
 	/* Activate Auto-Center */
-	c->bytes[7] = 0x14;
-	c->bytes[8] = 0x00;
-	c->bytes[9] = 0x00;
-	c->bytes[10] = 0x00;
-	c->bytes[11] = 0x00;
-	c->bytes[12] = 0x00;
-	c->bytes[13] = 0x00;
+	c->bytes[0] = 0x14;
+	c->bytes[1] = 0x00;
+	c->bytes[2] = 0x00;
+	c->bytes[3] = 0x00;
+	c->bytes[4] = 0x00;
+	c->bytes[5] = 0x00;
+	c->bytes[6] = 0x00;
 
 	return klgd_append_cmd(s, c);
 }
