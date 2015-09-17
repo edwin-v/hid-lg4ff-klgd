@@ -69,7 +69,7 @@
 #define LG4FF_FFEX_REV_MAJ 0x21
 #define LG4FF_FFEX_REV_MIN 0x00
 
-#define EFFECT_COUNT 4
+#define EFFECT_COUNT 16
 
 #define CMD_DOWNLOAD_FORCE	0
 #define CMD_DOWNLOAD_PLAY_FORCE	1
@@ -663,11 +663,15 @@ int lg4ff_control(struct input_dev *dev, struct klgd_command_stream *s, const en
 	if (!s)
 		return -EINVAL;
 
-	if (!data.effects.cur) {
-		printk(KERN_WARNING "HID-LG4FF: NULL effect, this _cannot_ happen!\n");
-		return -EINVAL;
+	printk(KERN_WARNING "KLGD command %d\n", (int)cmd);
+
+	if (cmd != FFPL_SET_GAIN && cmd != FFPL_SET_AUTOCENTER) {
+		if (!data.effects.cur) {
+			printk(KERN_WARNING "HID-LG4FF: NULL effect, this _cannot_ happen!\n");
+			return -EINVAL;
+		}
 	}
-printk(KERN_WARNING "command %d\n", (int)cmd);
+
 	switch (cmd) {
 	case FFPL_EMP_TO_UPL:
 		return lg4ff_upload(entry, s, data.effects.cur, false, false);
